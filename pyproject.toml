@@ -33,3 +33,6 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/imbue-bit/cjquant"
 "Bug Tracker" = "https://github.com/imbue-bit/cjquant/issues"
+
+[tool.setuptools.packages.find]
+include = ["cjquant*"]

@@ -221,3 +221,5 @@ __marimo__/
 *.csv
 *.processed_*
 
+.workbuddy/
+
