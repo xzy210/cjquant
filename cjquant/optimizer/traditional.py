@@ -21,9 +21,15 @@ class RiskParityOptimizer(BaseOptimizer):
     def _objective(self, w, cov):
         num_assets = len(w)
         rc = self._risk_contribution(w, cov)
-        target_rc = np.sum(rc) / num_assets
-        risk_diffs = np.sum(np.square(rc - target_rc))
-        return risk_diffs
+        total_rc = np.sum(rc)
+        if total_rc <= 0:
+            return 1e6
+        # Use percentage risk contributions so the optimizer works on an
+        # O(1) objective instead of tiny daily-covariance units.
+        pct_rc = rc / total_rc
+        target_rc = 1.0 / num_assets
+        risk_diffs = np.sum(np.square(pct_rc - target_rc))
+        return float(risk_diffs)
 
     def optimize(self, constraints: list = None) -> pd.Series:
         initial_w = np.array([1.0 / self.num_assets] * self.num_assets)
@@ -38,7 +44,7 @@ class RiskParityOptimizer(BaseOptimizer):
             method='SLSQP',
             constraints=cons,
             bounds=bounds,
-            options={'tol': 1e-10}
+            options={'ftol': 1e-12, 'maxiter': 1000}
         )
         
         return self._validate_weights(res.x)
