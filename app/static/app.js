@@ -710,17 +710,21 @@ print("核心量化计算完毕。")
         }
     }
 
-    function addResearchFund(code) {
-        code = code.trim().toUpperCase();
-        if (code === "") return;
-        // Basic format check or auto-append .OF if user typed just digits
-        if (/^\d{6}$/.test(code)) {
-            code = code + ".OF";
+    function addResearchFund(raw) {
+        let changed = false;
+        for (const part of raw.split(",")) {
+            let code = part.trim().toUpperCase();
+            if (code === "") continue;
+            // Basic format check or auto-append .OF if user typed just digits
+            if (/^\d{6}$/.test(code)) {
+                code = code + ".OF";
+            }
+            if (!researchFundPool.includes(code)) {
+                researchFundPool.push(code);
+                changed = true;
+            }
         }
-        if (!researchFundPool.includes(code)) {
-            researchFundPool.push(code);
-            renderResearchFundPool();
-        }
+        if (changed) renderResearchFundPool();
     }
 
     function removeResearchFund(code) {
