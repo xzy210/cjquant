@@ -917,5 +917,60 @@ table td span.cell-text {
     padding: 6px 4px;
     min-width: 65px;
     font-weight: 600;
+}
+
+/* NAV history chart (analytics tab) */
+.nav-chart-card {
+    margin-bottom: 0;
+}
+
+.nav-chart-panel.hidden {
+    display: none;
+}
+
+.nav-chart-hint {
+    margin-bottom: 8px;
+}
+
+.nav-chart-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.nav-chart-toolbar .form-group {
+    margin-bottom: 0;
+    min-width: 130px;
+}
+
+.nav-chart-checkbox {
+    height: 25px;
+    padding: 0 4px;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-input);
+}
+
+.nav-chart-legend {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 8px 2px 0;
+}
+
+.nav-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.nav-legend-swatch {
+    display: inline-block;
+    width: 16px;
+    height: 3px;
     background-color: var(--bg-dark);
 }

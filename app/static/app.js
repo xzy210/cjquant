@@ -65,6 +65,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (tabId === "tab-research") {
             fetchStrategyFiles();
         } else if (tabId === "tab-analytics") {
+            initNavChartDefaults();
             renderResearchFundPool();
         }
     }
@@ -1026,6 +1027,505 @@ print("核心量化计算完毕。")
         
         resultsDiv.classList.remove("hidden");
     }
+
+    // ----------------- NAV HISTORY CHART -----------------
+
+    const NAV_LINE_COLORS = [
+        "var(--color-red)",
+        "var(--color-blue)",
+        "var(--color-orange)",
+        "#7b1fa2",
+        "#00838f",
+        "#5d4037"
+    ];
+
+    const NAV_CHART_LAYOUT = {
+        svgWidth: 800,
+        svgHeight: 320,
+        margin: { top: 25, right: 30, bottom: 40, left: 60 }
+    };
+
+    let navChartState = null;
+    let navChartPanSession = null;
+
+    function setNavChartPanelVisible(visible) {
+        const panel = document.getElementById("nav-chart-panel");
+        if (panel) {
+            panel.classList.toggle("hidden", !visible);
+        }
+    }
+
+    function initNavChartDefaults() {
+        const startEl = document.getElementById("nav-chart-start-date");
+        const endEl = document.getElementById("nav-chart-end-date");
+        if (!startEl || !endEl || startEl.dataset.inited === "1") return;
+
+        const end = new Date();
+        const start = new Date();
+        start.setFullYear(end.getFullYear() - 1);
+
+        endEl.value = end.toISOString().slice(0, 10);
+        startEl.value = start.toISOString().slice(0, 10);
+        startEl.dataset.inited = "1";
+    }
+
+    function prepareNavChartData(apiSeries, metric, normalize) {
+        const fundMaps = apiSeries.map(s => {
+            const map = new Map();
+            s.points.forEach(p => {
+                const val = p[metric];
+                if (val !== null && val !== undefined && !Number.isNaN(val)) {
+                    map.set(p.date, val);
+                }
+            });
+            return { fund: s.fund, map };
+        });
+
+        let commonDates = null;
+        fundMaps.forEach(fm => {
+            const dates = new Set(fm.map.keys());
+            commonDates = commonDates === null
+                ? dates
+                : new Set([...commonDates].filter(d => dates.has(d)));
+        });
+
+        const sortedDates = Array.from(commonDates || []).sort();
+        const series = fundMaps.map(fm => {
+            const rawValues = sortedDates.map(d => fm.map.get(d));
+            let values = rawValues;
+            if (normalize && rawValues.length > 0) {
+                const base = rawValues[0];
+                values = rawValues.map(v => (v / base) * 100);
+            }
+            return { fund: fm.fund, values };
+        });
+
+        return { dates: sortedDates, series };
+    }
+
+    function renderNavChartLegend(series) {
+        const legend = document.getElementById("nav-chart-legend");
+        if (!legend) return;
+        legend.innerHTML = "";
+        series.forEach((s, idx) => {
+            const color = NAV_LINE_COLORS[idx % NAV_LINE_COLORS.length];
+            const item = document.createElement("div");
+            item.className = "nav-legend-item";
+            item.innerHTML = `<span class="nav-legend-swatch" style="background-color: ${color};"></span><span>${s.fund}</span>`;
+            legend.appendChild(item);
+        });
+    }
+
+    function formatNavYLabel(val, normalize) {
+        if (normalize) {
+            return val.toFixed(2);
+        }
+        return val.toFixed(4);
+    }
+
+    function clampNavChartView(state) {
+        const maxIdx = state.data.dates.length - 1;
+        const minSpan = Math.min(4, maxIdx);
+        let span = state.viewEnd - state.viewStart;
+        if (span < minSpan) {
+            const center = (state.viewStart + state.viewEnd) / 2;
+            state.viewStart = center - minSpan / 2;
+            state.viewEnd = center + minSpan / 2;
+            span = state.viewEnd - state.viewStart;
+        }
+        if (state.viewStart < 0) {
+            state.viewEnd -= state.viewStart;
+            state.viewStart = 0;
+        }
+        if (state.viewEnd > maxIdx) {
+            state.viewStart -= (state.viewEnd - maxIdx);
+            state.viewEnd = maxIdx;
+        }
+        if (state.viewStart < 0) state.viewStart = 0;
+    }
+
+    function resetNavChartView(state) {
+        state.viewStart = 0;
+        state.viewEnd = state.data.dates.length - 1;
+    }
+
+    function getNavChartVisibleRange(state) {
+        const { dates } = state.data;
+        const maxIdx = dates.length - 1;
+        const iStart = Math.max(0, Math.floor(state.viewStart));
+        const iEnd = Math.min(maxIdx, Math.ceil(state.viewEnd));
+        return { iStart, iEnd };
+    }
+
+    function getNavSvgXFromClient(svg, clientX) {
+        const ctm = svg.getScreenCTM();
+        if (ctm && svg.createSVGPoint) {
+            const pt = svg.createSVGPoint();
+            pt.x = clientX;
+            pt.y = 0;
+            return pt.matrixTransform(ctm.inverse()).x;
+        }
+
+        const { svgWidth } = NAV_CHART_LAYOUT;
+        const rect = svg.getBoundingClientRect();
+        return ((clientX - rect.left) / rect.width) * svgWidth;
+    }
+
+    function renderNavHistoryChart() {
+        const svg = document.getElementById("nav-history-svg");
+        if (!svg || !navChartState) return;
+
+        const { data, options, viewStart, viewEnd } = navChartState;
+        const { dates, series } = data;
+        const normalize = options.normalize;
+
+        svg.innerHTML = "";
+        if (!dates || dates.length === 0 || !series || series.length === 0) {
+            svg.innerHTML = `<text x="50%" y="50%" fill="var(--text-muted)" font-size="12" text-anchor="middle">暂无可用净值数据</text>`;
+            return;
+        }
+
+        const { svgWidth, svgHeight, margin } = NAV_CHART_LAYOUT;
+        svg.setAttribute("viewBox", `0 0 ${svgWidth} ${svgHeight}`);
+
+        const chartWidth = svgWidth - margin.left - margin.right;
+        const chartHeight = svgHeight - margin.top - margin.bottom;
+        const viewSpan = Math.max(viewEnd - viewStart, 0.001);
+
+        const { iStart, iEnd } = getNavChartVisibleRange(navChartState);
+        const visibleValues = [];
+        series.forEach(s => {
+            for (let i = iStart; i <= iEnd; i++) {
+                visibleValues.push(s.values[i]);
+            }
+        });
+
+        let minVal = Math.min(...visibleValues);
+        let maxVal = Math.max(...visibleValues);
+        const valRange = maxVal - minVal;
+        if (valRange === 0) {
+            minVal -= normalize ? 5 : minVal * 0.05 || 0.05;
+            maxVal += normalize ? 5 : maxVal * 0.05 || 0.05;
+        } else {
+            minVal -= valRange * 0.08;
+            maxVal += valRange * 0.08;
+        }
+
+        const getX = (index) => margin.left + ((index - viewStart) / viewSpan) * chartWidth;
+        const getY = (val) => margin.top + chartHeight - ((val - minVal) / (maxVal - minVal)) * chartHeight;
+
+        const mouseXToIndex = (mouseX) => {
+            const relativeX = Math.min(Math.max(mouseX - margin.left, 0), chartWidth);
+            return viewStart + (relativeX / chartWidth) * viewSpan;
+        };
+
+        const yTicks = 6;
+        for (let i = 0; i <= yTicks; i++) {
+            const val = minVal + (i / yTicks) * (maxVal - minVal);
+            const y = getY(val);
+
+            const gridLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            gridLine.setAttribute("x1", margin.left);
+            gridLine.setAttribute("y1", y);
+            gridLine.setAttribute("x2", margin.left + chartWidth);
+            gridLine.setAttribute("y2", y);
+            gridLine.setAttribute("stroke", "var(--border-color)");
+            gridLine.setAttribute("stroke-width", "0.5");
+            gridLine.setAttribute("stroke-dasharray", "2,2");
+            svg.appendChild(gridLine);
+
+            const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            text.setAttribute("x", margin.left - 8);
+            text.setAttribute("y", y + 4);
+            text.setAttribute("fill", "var(--text-muted)");
+            text.setAttribute("font-size", "10");
+            text.setAttribute("font-family", "var(--font-mono)");
+            text.setAttribute("text-anchor", "end");
+            text.textContent = formatNavYLabel(val, normalize);
+            svg.appendChild(text);
+        }
+
+        const xTicksCount = 6;
+        for (let i = 0; i < xTicksCount; i++) {
+            const idxFloat = viewStart + (i / (xTicksCount - 1)) * viewSpan;
+            const index = Math.min(dates.length - 1, Math.max(0, Math.round(idxFloat)));
+            const x = getX(idxFloat);
+
+            const gridLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            gridLine.setAttribute("x1", x);
+            gridLine.setAttribute("y1", margin.top);
+            gridLine.setAttribute("x2", x);
+            gridLine.setAttribute("y2", margin.top + chartHeight);
+            gridLine.setAttribute("stroke", "var(--border-color)");
+            gridLine.setAttribute("stroke-width", "0.5");
+            gridLine.setAttribute("stroke-dasharray", "2,2");
+            svg.appendChild(gridLine);
+
+            const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            text.setAttribute("x", x);
+            text.setAttribute("y", margin.top + chartHeight + 16);
+            text.setAttribute("fill", "var(--text-muted)");
+            text.setAttribute("font-size", "10");
+            text.setAttribute("font-family", "var(--font-mono)");
+            text.setAttribute("text-anchor", "middle");
+            text.textContent = dates[index];
+            svg.appendChild(text);
+        }
+
+        series.forEach((s, sIdx) => {
+            const color = NAV_LINE_COLORS[sIdx % NAV_LINE_COLORS.length];
+            let pathD = "";
+            for (let idx = iStart; idx <= iEnd; idx++) {
+                const x = getX(idx);
+                const y = getY(s.values[idx]);
+                pathD += idx === iStart ? `M ${x} ${y}` : ` L ${x} ${y}`;
+            }
+
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", pathD);
+            path.setAttribute("fill", "none");
+            path.setAttribute("stroke", color);
+            path.setAttribute("stroke-width", "2");
+            svg.appendChild(path);
+        });
+
+        const crosshair = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        crosshair.setAttribute("y1", margin.top);
+        crosshair.setAttribute("y2", margin.top + chartHeight);
+        crosshair.setAttribute("stroke", "rgba(0, 0, 0, 0.4)");
+        crosshair.setAttribute("stroke-width", "1");
+        crosshair.setAttribute("stroke-dasharray", "3,3");
+        crosshair.style.display = "none";
+        svg.appendChild(crosshair);
+
+        const trackerDots = series.map((s, sIdx) => {
+            const color = NAV_LINE_COLORS[sIdx % NAV_LINE_COLORS.length];
+            const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            dot.setAttribute("r", "3.5");
+            dot.setAttribute("fill", "var(--bg-panel)");
+            dot.setAttribute("stroke", color);
+            dot.setAttribute("stroke-width", "2");
+            dot.style.display = "none";
+            svg.appendChild(dot);
+            return dot;
+        });
+
+        const tooltipGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        tooltipGroup.style.display = "none";
+
+        const tooltipRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        tooltipRect.setAttribute("fill", "rgba(255, 255, 255, 0.95)");
+        tooltipRect.setAttribute("stroke", "var(--border-color)");
+        tooltipRect.setAttribute("stroke-width", "1");
+        tooltipGroup.appendChild(tooltipRect);
+
+        const tooltipTexts = [];
+        for (let i = 0; i < series.length + 1; i++) {
+            const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            text.setAttribute("x", "8");
+            text.setAttribute("y", String(16 + i * 14));
+            text.setAttribute("font-size", i === 0 ? "10" : "11");
+            text.setAttribute("font-family", i === 0 ? "var(--font-sans)" : "var(--font-mono)");
+            tooltipGroup.appendChild(text);
+            tooltipTexts.push(text);
+        }
+        svg.appendChild(tooltipGroup);
+
+        const overlay = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        overlay.setAttribute("x", margin.left);
+        overlay.setAttribute("y", margin.top);
+        overlay.setAttribute("width", chartWidth);
+        overlay.setAttribute("height", chartHeight);
+        overlay.setAttribute("fill", "transparent");
+        overlay.setAttribute("class", "nav-chart-overlay");
+        overlay.style.cursor = "crosshair";
+        svg.appendChild(overlay);
+
+        const updateHover = (clientX) => {
+            const mouseX = getNavSvgXFromClient(svg, clientX);
+            const clampedX = Math.min(Math.max(mouseX, margin.left), margin.left + chartWidth);
+            const idxFloat = mouseXToIndex(clampedX);
+            const dataIndex = Math.min(dates.length - 1, Math.max(0, Math.round(idxFloat)));
+
+            crosshair.setAttribute("x1", clampedX);
+            crosshair.setAttribute("x2", clampedX);
+            crosshair.style.display = "block";
+
+            tooltipTexts[0].setAttribute("fill", "var(--text-muted)");
+            tooltipTexts[0].textContent = `日期: ${dates[dataIndex]}`;
+
+            series.forEach((s, sIdx) => {
+                const val = s.values[dataIndex];
+                const color = NAV_LINE_COLORS[sIdx % NAV_LINE_COLORS.length];
+                const dot = trackerDots[sIdx];
+                dot.setAttribute("cx", getX(dataIndex));
+                dot.setAttribute("cy", getY(val));
+                dot.style.display = "block";
+
+                const label = normalize
+                    ? `${s.fund}: ${val.toFixed(2)}`
+                    : `${s.fund}: ${val.toFixed(4)}`;
+                tooltipTexts[sIdx + 1].textContent = label;
+                tooltipTexts[sIdx + 1].setAttribute("fill", color);
+            });
+
+            const tooltipHeight = 16 + series.length * 14 + 8;
+            tooltipRect.setAttribute("width", "190");
+            tooltipRect.setAttribute("height", String(tooltipHeight));
+
+            let tooltipX = clampedX + 15;
+            let tooltipY = margin.top + 10;
+            if (tooltipX + 190 > margin.left + chartWidth) {
+                tooltipX = clampedX - 205;
+            }
+            tooltipGroup.setAttribute("transform", `translate(${tooltipX}, ${tooltipY})`);
+            tooltipGroup.style.display = "block";
+        };
+
+        const clearHover = () => {
+            crosshair.style.display = "none";
+            trackerDots.forEach(dot => { dot.style.display = "none"; });
+            tooltipGroup.style.display = "none";
+        };
+
+        overlay.addEventListener("mousemove", (e) => {
+            if (navChartPanSession) return;
+            updateHover(e.clientX);
+        });
+
+        overlay.addEventListener("mouseleave", clearHover);
+
+        overlay.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            const mouseX = getNavSvgXFromClient(svg, e.clientX);
+            const rel = Math.min(Math.max((mouseX - margin.left) / chartWidth, 0), 1);
+            const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
+            const range = navChartState.viewEnd - navChartState.viewStart;
+            const anchor = navChartState.viewStart + rel * range;
+            const newRange = range * zoomFactor;
+            navChartState.viewStart = anchor - rel * newRange;
+            navChartState.viewEnd = anchor + (1 - rel) * newRange;
+            clampNavChartView(navChartState);
+            renderNavHistoryChart();
+        }, { passive: false });
+
+        overlay.addEventListener("mousedown", (e) => {
+            if (e.button === 0 || e.button === 1) {
+                e.preventDefault();
+                navChartPanSession = {
+                    startClientX: e.clientX,
+                    startSvgX: getNavSvgXFromClient(svg, e.clientX),
+                    viewStart: navChartState.viewStart,
+                    viewEnd: navChartState.viewEnd
+                };
+                overlay.style.cursor = "grabbing";
+                clearHover();
+            }
+        });
+
+        overlay.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            resetNavChartView(navChartState);
+            renderNavHistoryChart();
+        });
+    }
+
+    window.addEventListener("mousemove", (e) => {
+        if (!navChartPanSession || !navChartState) return;
+        const svg = document.getElementById("nav-history-svg");
+        if (!svg) return;
+
+        const { svgWidth, margin } = NAV_CHART_LAYOUT;
+        const chartWidth = svgWidth - margin.left - margin.right;
+        const currentSvgX = getNavSvgXFromClient(svg, e.clientX);
+        const deltaSvg = currentSvgX - navChartPanSession.startSvgX;
+        const range = navChartPanSession.viewEnd - navChartPanSession.viewStart;
+        const deltaIdx = -(deltaSvg / chartWidth) * range;
+        navChartState.viewStart = navChartPanSession.viewStart + deltaIdx;
+        navChartState.viewEnd = navChartPanSession.viewEnd + deltaIdx;
+        clampNavChartView(navChartState);
+        renderNavHistoryChart();
+    });
+
+    window.addEventListener("mouseup", () => {
+        if (!navChartPanSession) return;
+        navChartPanSession = null;
+        const overlay = document.querySelector("#nav-history-svg .nav-chart-overlay");
+        if (overlay) overlay.style.cursor = "crosshair";
+    });
+
+    function drawNavHistoryChart(chartData, options) {
+        navChartState = {
+            data: chartData,
+            options,
+            viewStart: 0,
+            viewEnd: chartData.dates.length - 1
+        };
+        setNavChartPanelVisible(true);
+        renderNavHistoryChart();
+    }
+
+    const btnRunNavChart = document.getElementById("btn-run-nav-chart");
+    if (btnRunNavChart) {
+        btnRunNavChart.addEventListener("click", async () => {
+            if (researchFundPool.length === 0) {
+                alert("请先在标的池中添加基金！");
+                return;
+            }
+
+            const startDate = document.getElementById("nav-chart-start-date")?.value;
+            const endDate = document.getElementById("nav-chart-end-date")?.value;
+            const metric = document.getElementById("nav-chart-metric")?.value || "adj_nav";
+            const normalize = document.getElementById("nav-chart-normalize")?.checked ?? true;
+
+            if (!startDate || !endDate) {
+                alert("请选择开始和结束日期！");
+                return;
+            }
+            if (startDate > endDate) {
+                alert("开始日期不能晚于结束日期！");
+                return;
+            }
+
+            btnRunNavChart.disabled = true;
+            btnRunNavChart.textContent = "绘制中...";
+
+            try {
+                const res = await fetch("/api/analytics/nav_history", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        funds: researchFundPool,
+                        start_date: startDate,
+                        end_date: endDate
+                    })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || "净值数据获取失败");
+                }
+
+                const data = await res.json();
+                const chartData = prepareNavChartData(data.series, metric, normalize);
+                if (chartData.dates.length < 2) {
+                    throw new Error("选定区间内有效净值数据不足，请调整日期或基金列表");
+                }
+
+                const metricLabel = metric === "adj_nav" ? "累计净值" : "单位净值";
+                drawNavHistoryChart(chartData, { normalize, metricLabel });
+                renderNavChartLegend(chartData.series);
+            } catch (err) {
+                alert(err.message);
+            } finally {
+                btnRunNavChart.disabled = false;
+                btnRunNavChart.textContent = "绘制净值曲线";
+            }
+        });
+    }
+
+    initNavChartDefaults();
+    setNavChartPanelVisible(false);
 
     // ----------------- TAB: FOF BACKTESTING -----------------
     

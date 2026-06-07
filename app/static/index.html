@@ -411,6 +411,42 @@
                     </div>
                 </div>
 
+                <!-- Fund NAV History Chart -->
+                <div class="card nav-chart-card" style="margin-bottom: 10px;">
+                    <div class="card-header">基金累计净值走势</div>
+                    <div class="card-body" style="padding: 12px;">
+                        <p class="section-desc">基于标的池基金绘制历史净值曲线，支持累计净值/单位净值切换与归一化对比（数据源：东方财富 via AKShare）。</p>
+                        <div class="nav-chart-toolbar">
+                            <div class="form-group">
+                                <label for="nav-chart-start-date">开始日期</label>
+                                <input type="date" id="nav-chart-start-date">
+                            </div>
+                            <div class="form-group">
+                                <label for="nav-chart-end-date">结束日期</label>
+                                <input type="date" id="nav-chart-end-date">
+                            </div>
+                            <div class="form-group">
+                                <label for="nav-chart-metric">净值口径</label>
+                                <select id="nav-chart-metric">
+                                    <option value="adj_nav" selected>累计净值 (复权口径)</option>
+                                    <option value="unit_nav">单位净值</option>
+                                </select>
+                            </div>
+                            <label class="checkbox-item nav-chart-checkbox">
+                                <input type="checkbox" id="nav-chart-normalize" checked> 归一化到 100
+                            </label>
+                            <button class="btn btn-primary btn-sm" id="btn-run-nav-chart" style="height: 25px;">绘制净值曲线</button>
+                        </div>
+                        <div id="nav-chart-panel" class="nav-chart-panel hidden">
+                            <p class="section-desc nav-chart-hint">交互：滚轮缩放 · 左键/中键拖拽平移 · 右键重置视图</p>
+                            <div class="chart-container" id="nav-chart-container">
+                                <svg id="nav-history-svg" width="100%" height="320" style="background-color: #f8fafc; border: 1px solid var(--border-color);"></svg>
+                            </div>
+                            <div id="nav-chart-legend" class="nav-chart-legend"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="analytics-grid">
                     <!-- Optimization Tool -->
                     <div class="card analytics-card">

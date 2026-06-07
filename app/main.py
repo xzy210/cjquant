@@ -302,6 +302,11 @@ class CorrelationRequest(BaseModel):
 class PerformanceRequest(BaseModel):
     funds: List[str]
 
+class NavHistoryRequest(BaseModel):
+    funds: List[str]
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
 class LookThroughRequest(BaseModel):
     weights: Dict[str, float]
 
@@ -680,6 +685,42 @@ def run_performance(req: PerformanceRequest):
         return {"performance": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"业绩指标计算失败: {str(e)}")
+
+@app.post("/api/analytics/nav_history")
+def run_nav_history(req: NavHistoryRequest):
+    if not req.funds:
+        raise HTTPException(status_code=400, detail="请提供基金列表")
+    try:
+        provider = PublicFundProvider()
+        series_list = []
+        for code in req.funds:
+            clean_code = code.split(".")[0]
+            try:
+                df = provider.fetch(clean_code, start_date=req.start_date, end_date=req.end_date)
+                if df.empty:
+                    continue
+                points = []
+                for date, row in df.sort_index().iterrows():
+                    unit_nav = row.get("unit_nav")
+                    adj_nav = row.get("adj_nav")
+                    points.append({
+                        "date": date.strftime("%Y-%m-%d"),
+                        "unit_nav": round(float(unit_nav), 4) if pd.notna(unit_nav) else None,
+                        "adj_nav": round(float(adj_nav), 4) if pd.notna(adj_nav) else None,
+                    })
+                if points:
+                    series_list.append({"fund": code, "points": points})
+            except Exception as e:
+                print(f"[Nav History] Error fetching {code}: {e}")
+
+        if not series_list:
+            raise HTTPException(status_code=400, detail="未获取到任何基金在指定区间内的历史净值数据")
+
+        return {"series": series_list}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"净值历史获取失败: {str(e)}")
 
 @app.post("/api/analytics/look_through")
 def run_look_through(req: LookThroughRequest):
