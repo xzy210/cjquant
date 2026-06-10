@@ -932,6 +932,15 @@ table td span.cell-text {
     margin-bottom: 8px;
 }
 
+.analysis-period-toolbar {
+    align-items: flex-end;
+}
+
+.period-mode-panel .form-group {
+    margin-bottom: 0;
+    min-width: 130px;
+}
+
 .nav-chart-toolbar {
     display: flex;
     gap: 12px;

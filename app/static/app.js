@@ -654,6 +654,202 @@ print("核心量化计算完毕。")
 
     // ----------------- TAB: ANALYTICS TOOLS -----------------
 
+    const RESEARCH_PERIOD_STORAGE_KEY = "cjquant_research_period";
+
+    function formatDateISO(d) {
+        return d.toISOString().slice(0, 10);
+    }
+
+    function loadResearchPeriodSettings() {
+        try {
+            const raw = localStorage.getItem(RESEARCH_PERIOD_STORAGE_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch (e) { /* ignore */ }
+        const end = new Date();
+        const start = new Date();
+        start.setFullYear(end.getFullYear() - 1);
+        return {
+            mode: "lookback_days",
+            lookbackDays: 252,
+            lookbackEnd: formatDateISO(end),
+            rangeStart: formatDateISO(start),
+            rangeEnd: formatDateISO(end),
+            syncNavChart: true
+        };
+    }
+
+    let researchPeriodSettings = loadResearchPeriodSettings();
+    let analysisPeriodPanelInited = false;
+
+    function saveResearchPeriodSettings() {
+        localStorage.setItem(RESEARCH_PERIOD_STORAGE_KEY, JSON.stringify(researchPeriodSettings));
+    }
+
+    function getAnalysisPeriodMode() {
+        const rangeRadio = document.getElementById("period-mode-range");
+        return rangeRadio && rangeRadio.checked ? "date_range" : "lookback_days";
+    }
+
+    function readAnalysisPeriodFromUI() {
+        researchPeriodSettings.mode = getAnalysisPeriodMode();
+        researchPeriodSettings.lookbackDays = parseInt(document.getElementById("period-lookback-days")?.value, 10) || 252;
+        researchPeriodSettings.lookbackEnd = document.getElementById("period-lookback-end")?.value || formatDateISO(new Date());
+        researchPeriodSettings.rangeStart = document.getElementById("period-range-start")?.value || "";
+        researchPeriodSettings.rangeEnd = document.getElementById("period-range-end")?.value || formatDateISO(new Date());
+        researchPeriodSettings.syncNavChart = document.getElementById("period-sync-nav-chart")?.checked ?? true;
+        saveResearchPeriodSettings();
+    }
+
+    function buildAnalysisPeriodPayload() {
+        readAnalysisPeriodFromUI();
+        if (researchPeriodSettings.mode === "date_range") {
+            if (!researchPeriodSettings.rangeStart || !researchPeriodSettings.rangeEnd) {
+                throw new Error("请填写分析区间的开始与结束日期");
+            }
+            if (researchPeriodSettings.rangeStart > researchPeriodSettings.rangeEnd) {
+                throw new Error("分析区间开始日期不能晚于结束日期");
+            }
+            return {
+                mode: "date_range",
+                start_date: researchPeriodSettings.rangeStart,
+                end_date: researchPeriodSettings.rangeEnd
+            };
+        }
+        const n = researchPeriodSettings.lookbackDays;
+        if (n < 5) throw new Error("回看交易日数至少为 5");
+        return {
+            mode: "lookback_days",
+            lookback_days: n,
+            end_date: researchPeriodSettings.lookbackEnd
+        };
+    }
+
+    function computeNavChartDatesFromPeriod() {
+        readAnalysisPeriodFromUI();
+        if (researchPeriodSettings.mode === "date_range") {
+            return {
+                start: researchPeriodSettings.rangeStart,
+                end: researchPeriodSettings.rangeEnd
+            };
+        }
+        const end = new Date(researchPeriodSettings.lookbackEnd + "T00:00:00");
+        const start = new Date(end);
+        start.setDate(start.getDate() - Math.ceil(researchPeriodSettings.lookbackDays * 1.5));
+        return { start: formatDateISO(start), end: researchPeriodSettings.lookbackEnd };
+    }
+
+    function updateAnalysisPeriodSummaryLabel(customLabel) {
+        const el = document.getElementById("analysis-period-summary");
+        if (!el) return;
+        if (customLabel) {
+            el.textContent = `当前区间：${customLabel}`;
+            return;
+        }
+        readAnalysisPeriodFromUI();
+        if (researchPeriodSettings.mode === "date_range") {
+            el.textContent = `当前区间：${researchPeriodSettings.rangeStart} ~ ${researchPeriodSettings.rangeEnd}`;
+        } else {
+            el.textContent = `当前区间：近 ${researchPeriodSettings.lookbackDays} 交易日，截至 ${researchPeriodSettings.lookbackEnd}`;
+        }
+    }
+
+    function applyPeriodToNavChartInputs() {
+        if (!researchPeriodSettings.syncNavChart) return;
+        const { start, end } = computeNavChartDatesFromPeriod();
+        const startEl = document.getElementById("nav-chart-start-date");
+        const endEl = document.getElementById("nav-chart-end-date");
+        if (startEl) startEl.value = start;
+        if (endEl) endEl.value = end;
+        const hint = document.getElementById("nav-chart-period-hint");
+        if (hint) {
+            hint.textContent = `净值曲线已与分析区间同步（${start} ~ ${end}）。取消同步后可单独设置更长区间。`;
+        }
+    }
+
+    function toggleAnalysisPeriodPanels() {
+        const mode = getAnalysisPeriodMode();
+        const lookbackPanel = document.getElementById("period-lookback-panel");
+        const rangePanel = document.getElementById("period-range-panel");
+        if (lookbackPanel) lookbackPanel.style.display = mode === "lookback_days" ? "flex" : "none";
+        if (rangePanel) rangePanel.style.display = mode === "date_range" ? "flex" : "none";
+        readAnalysisPeriodFromUI();
+        updateAnalysisPeriodSummaryLabel();
+        applyPeriodToNavChartInputs();
+    }
+
+    function initAnalysisPeriodPanel() {
+        if (analysisPeriodPanelInited) {
+            updateAnalysisPeriodSummaryLabel();
+            applyPeriodToNavChartInputs();
+            return;
+        }
+        analysisPeriodPanelInited = true;
+
+        const s = researchPeriodSettings;
+        const lookbackRadio = document.getElementById("period-mode-lookback");
+        const rangeRadio = document.getElementById("period-mode-range");
+        if (s.mode === "date_range") {
+            if (rangeRadio) rangeRadio.checked = true;
+        } else if (lookbackRadio) {
+            lookbackRadio.checked = true;
+        }
+
+        const lookbackDaysEl = document.getElementById("period-lookback-days");
+        const lookbackEndEl = document.getElementById("period-lookback-end");
+        const rangeStartEl = document.getElementById("period-range-start");
+        const rangeEndEl = document.getElementById("period-range-end");
+        const syncEl = document.getElementById("period-sync-nav-chart");
+
+        if (lookbackDaysEl) lookbackDaysEl.value = s.lookbackDays;
+        if (lookbackEndEl) lookbackEndEl.value = s.lookbackEnd || formatDateISO(new Date());
+        if (rangeStartEl) rangeStartEl.value = s.rangeStart;
+        if (rangeEndEl) rangeEndEl.value = s.rangeEnd || formatDateISO(new Date());
+        if (syncEl) syncEl.checked = s.syncNavChart !== false;
+
+        toggleAnalysisPeriodPanels();
+
+        document.querySelectorAll('input[name="analysis-period-mode"]').forEach(radio => {
+            radio.addEventListener("change", toggleAnalysisPeriodPanels);
+        });
+
+        ["period-lookback-days", "period-lookback-end", "period-range-start", "period-range-end"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener("change", () => {
+                updateAnalysisPeriodSummaryLabel();
+                applyPeriodToNavChartInputs();
+            });
+        });
+
+        if (syncEl) {
+            syncEl.addEventListener("change", () => {
+                readAnalysisPeriodFromUI();
+                applyPeriodToNavChartInputs();
+                if (!syncEl.checked) {
+                    const hint = document.getElementById("nav-chart-period-hint");
+                    if (hint) {
+                        hint.textContent = "净值曲线未与分析区间同步，可单独设置更长区间用于看图。";
+                    }
+                }
+            });
+        }
+
+        document.querySelectorAll(".period-preset-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const days = parseInt(btn.getAttribute("data-days"), 10);
+                const lookbackDaysEl = document.getElementById("period-lookback-days");
+                if (lookbackDaysEl) lookbackDaysEl.value = days;
+                if (lookbackRadio) lookbackRadio.checked = true;
+                toggleAnalysisPeriodPanels();
+            });
+        });
+    }
+
+    function onAnalysisPeriodResolved(periodInfo) {
+        if (periodInfo && periodInfo.label) {
+            updateAnalysisPeriodSummaryLabel(periodInfo.label);
+        }
+    }
+
     function renderResearchFundPool() {
         // 1. Render chips
         const chipsContainer = document.getElementById("research-fund-chips");
@@ -767,10 +963,11 @@ print("核心量化计算完毕。")
         }
         
         try {
+            const period = buildAnalysisPeriodPayload();
             const res = await fetch("/api/analytics/optimize", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ funds, method })
+                body: JSON.stringify({ funds, method, period })
             });
             
             if (!res.ok) {
@@ -779,6 +976,7 @@ print("核心量化计算完毕。")
             }
             
             const data = await res.json();
+            onAnalysisPeriodResolved(data.period);
             
             // Draw result table
             const resultsDiv = document.getElementById("optimization-results");
@@ -889,10 +1087,11 @@ print("核心量化计算完毕。")
             btnRunCorrelation.textContent = "计算中...";
             
             try {
+                const period = buildAnalysisPeriodPayload();
                 const res = await fetch("/api/analytics/correlation", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ funds: researchFundPool })
+                    body: JSON.stringify({ funds: researchFundPool, period })
                 });
                 
                 if (!res.ok) {
@@ -901,6 +1100,7 @@ print("核心量化计算完毕。")
                 }
                 
                 const data = await res.json();
+                onAnalysisPeriodResolved(data.period);
                 renderCorrelationHeatmap(data.correlation, researchFundPool);
             } catch (err) {
                 alert(err.message);
@@ -974,10 +1174,11 @@ print("核心量化计算完毕。")
             btnRunPerformance.textContent = "计算中...";
             
             try {
+                const period = buildAnalysisPeriodPayload();
                 const res = await fetch("/api/analytics/performance", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ funds: researchFundPool })
+                    body: JSON.stringify({ funds: researchFundPool, period })
                 });
                 
                 if (!res.ok) {
@@ -986,6 +1187,7 @@ print("核心量化计算完毕。")
                 }
                 
                 const data = await res.json();
+                onAnalysisPeriodResolved(data.period);
                 renderPerformanceComparison(data.performance);
             } catch (err) {
                 alert(err.message);
@@ -1056,16 +1258,21 @@ print("核心量化计算完毕。")
     }
 
     function initNavChartDefaults() {
+        initAnalysisPeriodPanel();
+
         const startEl = document.getElementById("nav-chart-start-date");
         const endEl = document.getElementById("nav-chart-end-date");
         if (!startEl || !endEl || startEl.dataset.inited === "1") return;
 
-        const end = new Date();
-        const start = new Date();
-        start.setFullYear(end.getFullYear() - 1);
-
-        endEl.value = end.toISOString().slice(0, 10);
-        startEl.value = start.toISOString().slice(0, 10);
+        if (researchPeriodSettings.syncNavChart !== false) {
+            applyPeriodToNavChartInputs();
+        } else {
+            const end = new Date();
+            const start = new Date();
+            start.setFullYear(end.getFullYear() - 1);
+            endEl.value = formatDateISO(end);
+            startEl.value = formatDateISO(start);
+        }
         startEl.dataset.inited = "1";
     }
 

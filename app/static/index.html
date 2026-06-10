@@ -411,11 +411,65 @@
                     </div>
                 </div>
 
+                <!-- Analysis Period Settings -->
+                <div class="card" style="margin-bottom: 10px;">
+                    <div class="card-header">分析数据区间</div>
+                    <div class="card-body" style="padding: 12px;">
+                        <p class="section-desc" style="margin-bottom: 8px;">相关性、业绩对比、组合优化共用此区间。净值曲线可与之同步，也可单独设置更长区间用于看图。</p>
+                        <p class="section-desc" id="analysis-period-summary" style="margin-bottom: 10px; color: var(--color-blue); font-weight: 500;">当前区间：近 252 交易日</p>
+                        <div class="nav-chart-toolbar analysis-period-toolbar">
+                            <div class="form-group" style="min-width: auto;">
+                                <label>区间模式</label>
+                                <div style="display: flex; gap: 12px; height: 25px; align-items: center;">
+                                    <label class="checkbox-item" style="border: none; background: transparent; padding: 0;">
+                                        <input type="radio" name="analysis-period-mode" id="period-mode-lookback" value="lookback_days" checked> 近 N 交易日
+                                    </label>
+                                    <label class="checkbox-item" style="border: none; background: transparent; padding: 0;">
+                                        <input type="radio" name="analysis-period-mode" id="period-mode-range" value="date_range"> 指定日期区间
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="period-lookback-panel" class="period-mode-panel nav-chart-toolbar" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 0; padding: 0;">
+                                <div class="form-group">
+                                    <label for="period-lookback-days">交易日数 N</label>
+                                    <input type="number" id="period-lookback-days" value="252" min="5" max="3000" step="1" style="background-color: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; font-family: var(--font-mono); font-size: 11px; width: 90px; height: 25px;">
+                                </div>
+                                <div class="form-group">
+                                    <label for="period-lookback-end">截至日期</label>
+                                    <input type="date" id="period-lookback-end" style="background-color: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; font-family: var(--font-mono); font-size: 11px; height: 25px;">
+                                </div>
+                                <div class="form-group" style="min-width: auto;">
+                                    <label>快捷</label>
+                                    <div style="display: flex; gap: 4px; height: 25px; align-items: center;">
+                                        <button type="button" class="btn btn-secondary btn-sm period-preset-btn" data-days="60">60</button>
+                                        <button type="button" class="btn btn-secondary btn-sm period-preset-btn" data-days="120">120</button>
+                                        <button type="button" class="btn btn-secondary btn-sm period-preset-btn" data-days="252">252</button>
+                                        <button type="button" class="btn btn-secondary btn-sm period-preset-btn" data-days="504">504</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="period-range-panel" class="period-mode-panel nav-chart-toolbar" style="display: none; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 0; padding: 0;">
+                                <div class="form-group">
+                                    <label for="period-range-start">开始日期</label>
+                                    <input type="date" id="period-range-start" style="background-color: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; font-family: var(--font-mono); font-size: 11px; height: 25px;">
+                                </div>
+                                <div class="form-group">
+                                    <label for="period-range-end">结束日期</label>
+                                    <input type="date" id="period-range-end" style="background-color: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px 6px; font-family: var(--font-mono); font-size: 11px; height: 25px;">
+                                </div>
+                            </div>
+                            <label class="checkbox-item nav-chart-checkbox">
+                                <input type="checkbox" id="period-sync-nav-chart" checked> 同步至净值曲线
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Fund NAV History Chart -->
                 <div class="card nav-chart-card" style="margin-bottom: 10px;">
                     <div class="card-header">基金累计净值走势</div>
                     <div class="card-body" style="padding: 12px;">
-                        <p class="section-desc">基于标的池基金绘制历史净值曲线，支持累计净值/单位净值切换与归一化对比（数据源：东方财富 via AKShare）。</p>
+                        <p class="section-desc" id="nav-chart-period-hint">基于标的池基金绘制历史净值曲线，支持累计净值/单位净值切换与归一化对比（数据源：东方财富 via AKShare）。</p>
                         <div class="nav-chart-toolbar">
                             <div class="form-group">
                                 <label for="nav-chart-start-date">开始日期</label>
@@ -452,7 +506,7 @@
                     <div class="card analytics-card">
                         <div class="card-header">FOF 组合权重优化工具 (cjquant 内核)</div>
                         <div class="card-body">
-                            <p class="section-desc">基于历史收益率矩阵，利用量化算法计算最优配置权重。</p>
+                            <p class="section-desc" id="optimize-period-desc">基于历史收益率矩阵，利用量化算法计算最优配置权重（区间见上方「分析数据区间」）。</p>
                             <form id="form-optimize">
                                 <div class="form-group">
                                     <label>选择基金标的 (多选)</label>
@@ -526,7 +580,7 @@
                     <div class="card analytics-card">
                         <div class="card-header">基金相关性热力图</div>
                         <div class="card-body">
-                            <p class="section-desc">基于历史收益率计算的 Pearson 相关系数矩阵（近 252 交易日）。单元格背景颜色深度表示相关程度。</p>
+                            <p class="section-desc" id="correlation-period-desc">基于历史收益率计算的 Pearson 相关系数矩阵（区间见上方「分析数据区间」）。单元格背景颜色深度表示相关程度。</p>
                             <button class="btn btn-primary" id="btn-run-correlation" style="margin-bottom: 12px;">运行相关性计算</button>
                             <div class="result-box hidden" id="correlation-results" style="overflow-x: auto; padding: 0;">
                                 <table class="result-table" style="border-collapse: collapse; text-align: center; width: 100%; border: none;">
@@ -543,7 +597,7 @@
                     <div class="card analytics-card">
                         <div class="card-header">基金业绩指标对比</div>
                         <div class="card-body">
-                            <p class="section-desc">对比标的池中基金的年化收益率、年化波动率、夏普比率及最大回撤（近 252 交易日，无风险利率 2%）。</p>
+                            <p class="section-desc" id="performance-period-desc">对比标的池中基金的年化收益率、年化波动率、夏普比率及最大回撤（区间见上方「分析数据区间」，无风险利率 2%）。</p>
                             <button class="btn btn-primary" id="btn-run-performance" style="margin-bottom: 12px;">运行业绩指标对比</button>
                             <div class="result-box hidden" id="performance-results" style="padding: 0; overflow-x: auto;">
                                 <table class="result-table" style="width: 100%; border-collapse: collapse; text-align: left;">

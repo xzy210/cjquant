@@ -6,7 +6,7 @@ import subprocess
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Literal
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -292,15 +292,25 @@ class StrategyCreate(BaseModel):
 class StrategyUpdate(BaseModel):
     code: str
 
+class AnalysisPeriod(BaseModel):
+    """投研分析统一数据区间"""
+    mode: Literal["lookback_days", "date_range"] = "lookback_days"
+    lookback_days: Optional[int] = 252
+    end_date: Optional[str] = None
+    start_date: Optional[str] = None
+
 class OptimizeRequest(BaseModel):
     funds: List[str]
     method: str  # "RiskParity", "MeanVariance", "HRP"
+    period: Optional[AnalysisPeriod] = None
 
 class CorrelationRequest(BaseModel):
     funds: List[str]
+    period: Optional[AnalysisPeriod] = None
 
 class PerformanceRequest(BaseModel):
     funds: List[str]
+    period: Optional[AnalysisPeriod] = None
 
 class NavHistoryRequest(BaseModel):
     funds: List[str]
@@ -554,39 +564,98 @@ def refresh_navs():
     save_portfolio(portfolio)
     return portfolio
 
-def get_real_returns(funds: List[str], days: int = 252) -> pd.DataFrame:
+def _parse_date_str(date_str: Optional[str], default: datetime) -> datetime:
+    if not date_str:
+        return default
+    return datetime.strptime(date_str, "%Y-%m-%d")
+
+
+def resolve_analysis_period(period: Optional[AnalysisPeriod]) -> tuple:
     """
-    Fetches real historical returns for target funds using PublicFundProvider.
-    Falls back to simulated correlated returns if data fetch fails or symbols are invalid.
+    解析投研分析区间，返回 (fetch_start, fetch_end, tail_trading_days)。
+    tail_trading_days 为 None 时表示使用区间内全部对齐后的交易日。
     """
+    p = period or AnalysisPeriod()
+    end_dt = _parse_date_str(p.end_date, datetime.now())
+    end_str = end_dt.strftime("%Y-%m-%d")
+
+    if p.mode == "date_range":
+        if not p.start_date:
+            raise HTTPException(status_code=400, detail="指定日期区间时必须提供开始日期")
+        start_dt = _parse_date_str(p.start_date, end_dt)
+        if start_dt > end_dt:
+            raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+        return start_dt.strftime("%Y-%m-%d"), end_str, None
+
+    lookback = p.lookback_days or 252
+    if lookback < 5:
+        raise HTTPException(status_code=400, detail="回看交易日数至少为 5")
+    start_dt = end_dt - timedelta(days=int(lookback * 1.5))
+    return start_dt.strftime("%Y-%m-%d"), end_str, lookback
+
+
+def describe_analysis_period(period: Optional[AnalysisPeriod], n_trading_days: int) -> dict:
+    p = period or AnalysisPeriod()
+    end_str = (p.end_date or datetime.now().strftime("%Y-%m-%d"))
+    if p.mode == "date_range":
+        label = f"{p.start_date} ~ {end_str}（{n_trading_days} 个交易日）"
+    else:
+        label = f"近 {p.lookback_days or 252} 交易日，截至 {end_str}（实际 {n_trading_days} 日）"
+    return {
+        "mode": p.mode,
+        "label": label,
+        "trading_days": n_trading_days,
+        "start_date": p.start_date,
+        "end_date": end_str,
+        "lookback_days": p.lookback_days,
+    }
+
+
+def fetch_aligned_returns(
+    funds: List[str],
+    period: Optional[AnalysisPeriod] = None,
+    min_trading_days: int = 10,
+) -> tuple:
+    """
+    按统一分析区间拉取基金净值并返回对齐后的日收益率矩阵。
+    返回 (returns_df, period_info_dict)。
+    """
+    fetch_start, fetch_end, tail_n = resolve_analysis_period(period)
     provider = PublicFundProvider()
     returns_dict = {}
-    
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
-    
+
     for code in funds:
         clean_code = code.split(".")[0]
         try:
-            df = provider.fetch(clean_code, start_date=start_date, end_date=end_date)
+            df = provider.fetch(clean_code, start_date=fetch_start, end_date=fetch_end)
             if not df.empty and len(df) > 5:
                 df_sorted = df.sort_index()
                 rets = df_sorted['adj_nav'].pct_change().dropna()
                 returns_dict[code] = rets
         except Exception as e:
             print(f"[Research Data Fetch] Error fetching NAV for {code}: {e}")
-            
+
     if len(returns_dict) == len(funds):
         df_all = pd.DataFrame(returns_dict).dropna()
-        if len(df_all) >= 10:
-            return df_all.tail(days)
-            
+        if tail_n is not None:
+            df_all = df_all.tail(tail_n)
+        if len(df_all) >= min_trading_days:
+            return df_all, describe_analysis_period(period, len(df_all))
+
+    fallback_days = tail_n or 252
     print(f"[Research Data Fetch] Fallback triggered. Simulating returns for funds: {funds}")
     np.random.seed(42)
-    raw_ret = np.random.normal(0.0002, 0.012, size=(days, len(funds)))
+    raw_ret = np.random.normal(0.0002, 0.012, size=(fallback_days, len(funds)))
     cov_matrix = np.eye(len(funds)) * 0.7 + 0.3
     correlated_ret = raw_ret @ np.linalg.cholesky(cov_matrix).T
-    return pd.DataFrame(correlated_ret, columns=funds)
+    df_sim = pd.DataFrame(correlated_ret, columns=funds)
+    return df_sim, describe_analysis_period(period, len(df_sim))
+
+
+def get_real_returns(funds: List[str], days: int = 252) -> pd.DataFrame:
+    """兼容旧调用：等价于近 N 交易日回看"""
+    df, _ = fetch_aligned_returns(funds, AnalysisPeriod(lookback_days=days), min_trading_days=10)
+    return df
 
 
 # 4. Analytics endpoints (Calls cjquant library)
@@ -597,7 +666,7 @@ def run_optimization(req: OptimizeRequest):
         raise HTTPException(status_code=400, detail="Please select at least 2 funds for optimization")
         
     try:
-        df_returns = get_real_returns(req.funds)
+        df_returns, period_info = fetch_aligned_returns(req.funds, req.period, min_trading_days=15)
         
         if req.method == "RiskParity":
             opt = RiskParityOptimizer(df_returns)
@@ -615,7 +684,9 @@ def run_optimization(req: OptimizeRequest):
         for fund, w in zip(req.funds, weights):
             results.append({"fund": fund, "weight": round(float(w), 6)})
             
-        return {"weights": results, "method": req.method}
+        return {"weights": results, "method": req.method, "period": period_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
 
@@ -624,7 +695,7 @@ def run_correlation(req: CorrelationRequest):
     if len(req.funds) < 2:
         raise HTTPException(status_code=400, detail="请选择至少 2 个基金进行相关性分析")
     try:
-        df_returns = get_real_returns(req.funds)
+        df_returns, period_info = fetch_aligned_returns(req.funds, req.period, min_trading_days=10)
         corr_matrix = df_returns.corr().round(4)
         
         results = []
@@ -635,7 +706,9 @@ def run_correlation(req: CorrelationRequest):
                 row[other_fund] = float(val)
             results.append(row)
             
-        return {"correlation": results}
+        return {"correlation": results, "period": period_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"相关性计算失败: {str(e)}")
 
@@ -644,7 +717,7 @@ def run_performance(req: PerformanceRequest):
     if not req.funds:
         raise HTTPException(status_code=400, detail="请提供基金列表进行性能对比")
     try:
-        df_returns = get_real_returns(req.funds)
+        df_returns, period_info = fetch_aligned_returns(req.funds, req.period, min_trading_days=10)
         
         results = []
         for fund in req.funds:
@@ -682,7 +755,9 @@ def run_performance(req: PerformanceRequest):
                 "max_drawdown": round(float(max_dd), 4)
             })
             
-        return {"performance": results}
+        return {"performance": results, "period": period_info}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"业绩指标计算失败: {str(e)}")
 
