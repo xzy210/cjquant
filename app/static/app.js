@@ -1310,15 +1310,39 @@ print("核心量化计算完毕。")
         return { dates: sortedDates, series };
     }
 
+    function isNavSeriesVisible(state, fund) {
+        return state.visible?.[fund] !== false;
+    }
+
     function renderNavChartLegend(series) {
         const legend = document.getElementById("nav-chart-legend");
         if (!legend) return;
         legend.innerHTML = "";
         series.forEach((s, idx) => {
             const color = NAV_LINE_COLORS[idx % NAV_LINE_COLORS.length];
-            const item = document.createElement("div");
+            const item = document.createElement("label");
             item.className = "nav-legend-item";
-            item.innerHTML = `<span class="nav-legend-swatch" style="background-color: ${color};"></span><span>${s.fund}</span>`;
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = navChartState?.visible?.[s.fund] !== false;
+            checkbox.addEventListener("change", () => {
+                if (navChartState) {
+                    navChartState.visible[s.fund] = checkbox.checked;
+                    renderNavHistoryChart();
+                }
+            });
+
+            const swatch = document.createElement("span");
+            swatch.className = "nav-legend-swatch";
+            swatch.style.backgroundColor = color;
+
+            const label = document.createElement("span");
+            label.textContent = s.fund;
+
+            item.appendChild(checkbox);
+            item.appendChild(swatch);
+            item.appendChild(label);
             legend.appendChild(item);
         });
     }
@@ -1402,10 +1426,16 @@ print("核心量化计算完毕。")
         const { iStart, iEnd } = getNavChartVisibleRange(navChartState);
         const visibleValues = [];
         series.forEach(s => {
+            if (!isNavSeriesVisible(navChartState, s.fund)) return;
             for (let i = iStart; i <= iEnd; i++) {
                 visibleValues.push(s.values[i]);
             }
         });
+
+        if (visibleValues.length === 0) {
+            svg.innerHTML = `<text x="50%" y="50%" fill="var(--text-muted)" font-size="12" text-anchor="middle">请至少勾选一只基金</text>`;
+            return;
+        }
 
         let minVal = Math.min(...visibleValues);
         let maxVal = Math.max(...visibleValues);
@@ -1480,6 +1510,7 @@ print("核心量化计算完毕。")
         }
 
         series.forEach((s, sIdx) => {
+            if (!isNavSeriesVisible(navChartState, s.fund)) return;
             const color = NAV_LINE_COLORS[sIdx % NAV_LINE_COLORS.length];
             let pathD = "";
             for (let idx = iStart; idx <= iEnd; idx++) {
@@ -1561,10 +1592,18 @@ print("核心量化计算完毕。")
             tooltipTexts[0].setAttribute("fill", "var(--text-muted)");
             tooltipTexts[0].textContent = `日期: ${dates[dataIndex]}`;
 
+            let visibleCount = 0;
             series.forEach((s, sIdx) => {
+                const dot = trackerDots[sIdx];
+                const text = tooltipTexts[sIdx + 1];
+                if (!isNavSeriesVisible(navChartState, s.fund)) {
+                    dot.style.display = "none";
+                    text.style.display = "none";
+                    return;
+                }
+                visibleCount += 1;
                 const val = s.values[dataIndex];
                 const color = NAV_LINE_COLORS[sIdx % NAV_LINE_COLORS.length];
-                const dot = trackerDots[sIdx];
                 dot.setAttribute("cx", getX(dataIndex));
                 dot.setAttribute("cy", getY(val));
                 dot.style.display = "block";
@@ -1572,11 +1611,12 @@ print("核心量化计算完毕。")
                 const label = normalize
                     ? `${s.fund}: ${val.toFixed(2)}`
                     : `${s.fund}: ${val.toFixed(4)}`;
-                tooltipTexts[sIdx + 1].textContent = label;
-                tooltipTexts[sIdx + 1].setAttribute("fill", color);
+                text.textContent = label;
+                text.setAttribute("fill", color);
+                text.style.display = "block";
             });
 
-            const tooltipHeight = 16 + series.length * 14 + 8;
+            const tooltipHeight = 16 + visibleCount * 14 + 8;
             tooltipRect.setAttribute("width", "190");
             tooltipRect.setAttribute("height", String(tooltipHeight));
 
@@ -1666,9 +1706,11 @@ print("核心量化计算完毕。")
             data: chartData,
             options,
             viewStart: 0,
-            viewEnd: chartData.dates.length - 1
+            viewEnd: chartData.dates.length - 1,
+            visible: Object.fromEntries(chartData.series.map(s => [s.fund, true]))
         };
         setNavChartPanelVisible(true);
+        renderNavChartLegend(chartData.series);
         renderNavHistoryChart();
     }
 
@@ -1721,7 +1763,6 @@ print("核心量化计算完毕。")
 
                 const metricLabel = metric === "adj_nav" ? "累计净值" : "单位净值";
                 drawNavHistoryChart(chartData, { normalize, metricLabel });
-                renderNavChartLegend(chartData.series);
             } catch (err) {
                 alert(err.message);
             } finally {

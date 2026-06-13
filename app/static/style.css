@@ -961,20 +961,43 @@ table td span.cell-text {
     background-color: var(--bg-input);
 }
 
+.nav-chart-body {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.nav-chart-body .chart-container {
+    flex: 1;
+    min-width: 0;
+}
+
 .nav-chart-legend {
     display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-    padding: 8px 2px 0;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 0;
+    flex-shrink: 0;
+    min-width: 130px;
+    max-height: 320px;
+    overflow-y: auto;
 }
 
 .nav-legend-item {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 6px;
     font-size: 11px;
     font-family: var(--font-mono);
     color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.nav-legend-item input[type="checkbox"] {
+    margin: 0;
+    flex-shrink: 0;
 }
 
 .nav-legend-swatch {
