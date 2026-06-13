@@ -27,6 +27,7 @@ STRATEGIES_DIR = os.path.join(BASE_DIR, "strategies")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 TASKS_JSON = os.path.join(BASE_DIR, "tasks.json")
 PORTFOLIO_JSON = os.path.join(BASE_DIR, "portfolio.json")
+BACKTEST_WARMUP_CALENDAR_DAYS = 365  # 覆盖 120 个交易日及日期对齐缓冲，供策略首日计算历史窗口
 
 # Ensure directories exist
 os.makedirs(STRATEGIES_DIR, exist_ok=True)
@@ -869,8 +870,9 @@ def run_look_through(req: LookThroughRequest):
         raise HTTPException(status_code=500, detail=f"Look-through failed: {str(e)}")
 
 class BacktestContext:
-    def __init__(self, engine):
+    def __init__(self, engine, history_data: Optional[pd.DataFrame] = None):
         self._engine = engine
+        self._history_data = history_data if history_data is not None else engine.market_data
         self._reinvest_weights = None
         self.funds = list(self._engine.market_data['fund_code'].unique())
 
@@ -900,7 +902,7 @@ class BacktestContext:
         return self._engine._get_nav(fund_code, date)
 
     def get_history_navs(self, fund_code: str, count: int) -> pd.Series:
-        mdata = self._engine.market_data
+        mdata = self._history_data
         subset = mdata[(mdata.index <= self.current_date) & (mdata['fund_code'] == fund_code)].sort_index()
         return subset['adj_nav'].tail(count)
 
@@ -940,12 +942,15 @@ def run_backtest(req: BacktestRequest):
         import uuid
         
         # 1. Fetch public fund historical NAV data from EM (akshare)
+        # 向前多取预热数据，供策略在首个回测日计算历史窗口；实际交易仍从 req.start_date 开始。
         provider = PublicFundProvider()
+        start_dt = _parse_date_str(req.start_date, datetime.now())
+        warmup_start = (start_dt - timedelta(days=BACKTEST_WARMUP_CALENDAR_DAYS)).strftime("%Y-%m-%d")
         dfs = []
         for code in req.funds:
             clean_code = code.split(".")[0]
             try:
-                df = provider.fetch(clean_code, start_date=req.start_date, end_date=req.end_date)
+                df = provider.fetch(clean_code, start_date=warmup_start, end_date=req.end_date)
                 if not df.empty:
                     df['fund_code'] = code
                     dfs.append(df)
@@ -955,11 +960,15 @@ def run_backtest(req: BacktestRequest):
         if not dfs:
             raise HTTPException(status_code=400, detail="未获取到所选基金在指定日期区间内的任何历史净值数据。")
             
-        market_data = pd.concat(dfs)
+        full_market_data = pd.concat(dfs).sort_index()
+        backtest_market_data = full_market_data[full_market_data.index >= start_dt]
+        if backtest_market_data.empty:
+            raise HTTPException(status_code=400, detail="未获取到所选基金在回测区间内的任何历史净值数据。")
+        market_data = full_market_data
         
         # 2. Initialize Backtest Engine
         engine = OTCBacktestEngine(
-            market_data=market_data,
+            market_data=backtest_market_data,
             initial_cash=req.initial_cash,
             t_plus_confirm=1,
             t_plus_settle=3,
@@ -994,7 +1003,7 @@ def run_backtest(req: BacktestRequest):
                 raise HTTPException(status_code=400, detail=f"导入或执行策略文件失败: {str(se)}")
                 
         # 4. Simulate Rebalance Strategy Loop
-        context = BacktestContext(engine)
+        context = BacktestContext(engine, history_data=full_market_data)
         
         if is_user_strategy and init_func:
             try:

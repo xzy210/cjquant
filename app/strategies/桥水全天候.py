@@ -52,6 +52,9 @@ REBALANCE_MONTHS = {3, 6, 9, 12}
 # 风险平价历史窗口（交易日数）
 HISTORY_WINDOW = 120
 
+# 多取一段历史用于吸收基金净值日期不完全一致造成的对齐损耗
+HISTORY_ALIGNMENT_BUFFER = 40
+
 
 def init(context):
     """初始化：记录上次再平衡季度"""
@@ -80,17 +83,21 @@ def _compute_rp_weights(context):
     hist_returns = {}
 
     for fund in funds:
-        navs = context.get_history_navs(fund, count=HISTORY_WINDOW)
-        if len(navs) >= 20:
-            rets = navs.pct_change().dropna()
-            hist_returns[fund] = rets
-
-    if len(hist_returns) < 2:
-        return None  # 数据太少，无法优化
+        navs = context.get_history_navs(fund, count=HISTORY_WINDOW + HISTORY_ALIGNMENT_BUFFER)
+        if len(navs) < HISTORY_WINDOW:
+            print(f"  [历史数据不足] {fund} 仅有 {len(navs)} 条净值，需 {HISTORY_WINDOW} 条")
+            return None
+        rets = navs.pct_change().dropna()
+        hist_returns[fund] = rets
 
     df_rets = pd.DataFrame(hist_returns).dropna()
-    if len(df_rets) < 15:
+    if len(df_rets) < HISTORY_WINDOW - 1:
+        print(
+            f"  [历史数据不足] 对齐后仅有 {len(df_rets)} 条收益率，"
+            f"需 {HISTORY_WINDOW - 1} 条"
+        )
         return None
+    df_rets = df_rets.tail(HISTORY_WINDOW - 1)
 
     try:
         opt = RiskParityOptimizer(df_rets)
@@ -112,12 +119,19 @@ def handle_bar(context):
     current_date = context.current_date
     is_first_day = (context.current_date_idx == 0)
 
-    # ── 期初建仓（使用静态目标权重）────────────────────────
+    # ── 期初建仓（优先使用风险平价，数据不足时回退静态权重）────────────
     if is_first_day:
-        print(f"[{current_date.strftime('%Y-%m-%d')}] 期初建仓（全天候静态权重）")
-        for code, w in STATIC_WEIGHTS.items():
-            print(f"    {code}: {w:.0%}")
-        context.rebalance(STATIC_WEIGHTS)
+        rp_weights = _compute_rp_weights(context)
+        if rp_weights is not None:
+            print(f"[{current_date.strftime('%Y-%m-%d')}] 期初建仓（风险平价）")
+            for code, w in rp_weights.items():
+                print(f"    {code}: {w:.2%}")
+            context.rebalance(rp_weights)
+        else:
+            print(f"[{current_date.strftime('%Y-%m-%d')}] 期初建仓（静态权重回退）")
+            for code, w in STATIC_WEIGHTS.items():
+                print(f"    {code}: {w:.0%}")
+            context.rebalance(STATIC_WEIGHTS)
         context.last_rebalance_quarter = _get_current_quarter(current_date)
         return
 
