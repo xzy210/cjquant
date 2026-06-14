@@ -238,7 +238,11 @@
                                 <form id="form-backtest" class="flex-form">
                                     <div class="form-group">
                                         <label for="backtest-funds">基金标的 (英文逗号分隔)</label>
-                                        <input type="text" id="backtest-funds" value="000001.OF,000002.OF,000003.OF" placeholder="如: 000001.OF,000002.OF" required>
+                                        <div style="display:flex; gap:8px; align-items:center;">
+                                            <input type="text" id="backtest-funds" value="" placeholder="选择用户策略后点刷新，或手动输入" required style="flex:1;">
+                                            <button type="button" class="btn btn-secondary" id="btn-refresh-backtest-funds" title="从策略基金池配置加载">刷新基金池</button>
+                                        </div>
+                                        <small id="backtest-funds-hint" style="color:var(--text-muted); margin-top:4px; display:block;"></small>
                                     </div>
                                     <div class="form-group">
                                         <label for="backtest-initial-cash">初始资金 (RMB)</label>

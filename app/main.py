@@ -19,6 +19,12 @@ from cjquant.optimizer.traditional import RiskParityOptimizer, MeanVarianceOptim
 from cjquant.optimizer.machine_learning import HRPOptimizer
 from cjquant.look_through.engine import LookThroughAnalyzer
 from cjquant.data.providers.public import PublicFundProvider
+from cjquant.strategies.fund_pool import (
+    load_fund_pool,
+    save_fund_pool,
+    get_fund_codes,
+    normalize_fund_pool,
+)
 
 app = FastAPI(title="CJQuant OTC Strategy & Portfolio Terminal")
 
@@ -31,6 +37,7 @@ BACKTEST_WARMUP_CALENDAR_DAYS = 365  # 覆盖 120 个交易日及日期对齐缓
 
 # Ensure directories exist
 os.makedirs(STRATEGIES_DIR, exist_ok=True)
+os.makedirs(os.path.join(STRATEGIES_DIR, "pools"), exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Helper to load tasks
@@ -339,7 +346,42 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     initial_cash: float
-    rebalance_freq: str  # "once", "monthly", "monthly_rp"
+    rebalance_freq: str  # "once", "monthly", "monthly_rp", or strategy .py filename
+
+
+class FundPoolItem(BaseModel):
+    code: str
+    label: str = ""
+    static_weight: float
+
+
+class FundPoolUpdate(BaseModel):
+    name: str = ""
+    description: str = ""
+    funds: List[FundPoolItem]
+
+
+def _resolve_strategy_filename(name: str) -> Optional[str]:
+    path = os.path.join(STRATEGIES_DIR, name)
+    if os.path.exists(path):
+        return name
+    if not name.endswith(".py"):
+        candidate = f"{name}.py"
+        if os.path.exists(os.path.join(STRATEGIES_DIR, candidate)):
+            return candidate
+    return None
+
+
+def _resolve_backtest_funds(rebalance_freq: str, req_funds: List[str]) -> List[str]:
+    """用户策略有基金池配置时，以配置文件为准。"""
+    strategy_name = _resolve_strategy_filename(rebalance_freq)
+    if strategy_name and strategy_name.endswith(".py"):
+        pool = load_fund_pool(strategy_name, STRATEGIES_DIR)
+        if pool:
+            return get_fund_codes(pool)
+    if not req_funds:
+        raise HTTPException(status_code=400, detail="请选择至少一个基金标的进行回测")
+    return req_funds
 
 # ----------------- API ENDPOINTS -----------------
 
@@ -349,6 +391,35 @@ def list_strategies():
     """List strategy files inside app/strategies"""
     files = sorted([f for f in os.listdir(STRATEGIES_DIR) if f.endswith(".py")])
     return {"strategies": files}
+
+
+@app.get("/api/strategies/{name:path}/fund-pool")
+def get_strategy_fund_pool(name: str):
+    """读取策略对应的基金池配置文件（pools/<stem>.json）。"""
+    strategy_name = _resolve_strategy_filename(name)
+    if not strategy_name:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    pool = load_fund_pool(strategy_name, STRATEGIES_DIR)
+    if pool is None:
+        raise HTTPException(status_code=404, detail="该策略暂无基金池配置文件")
+    return pool
+
+
+@app.put("/api/strategies/{name:path}/fund-pool")
+def update_strategy_fund_pool(name: str, payload: FundPoolUpdate):
+    """更新策略基金池配置文件。"""
+    strategy_name = _resolve_strategy_filename(name)
+    if not strategy_name:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    try:
+        pool = normalize_fund_pool(payload.model_dump())
+        saved_path = save_fund_pool(strategy_name, STRATEGIES_DIR, pool)
+        return {"status": "success", "path": saved_path, "pool": pool}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/strategies/{name:path}")
 def get_strategy_content(name: str):
@@ -930,7 +1001,8 @@ class BacktestContext:
 # 5. FOF Backtest Endpoint
 @app.post("/api/analytics/backtest")
 def run_backtest(req: BacktestRequest):
-    if not req.funds:
+    funds = _resolve_backtest_funds(req.rebalance_freq, req.funds)
+    if not funds:
         raise HTTPException(status_code=400, detail="请选择至少一个基金标的进行回测")
     if req.initial_cash <= 0:
         raise HTTPException(status_code=400, detail="初始资金必须大于 0")
@@ -947,7 +1019,7 @@ def run_backtest(req: BacktestRequest):
         start_dt = _parse_date_str(req.start_date, datetime.now())
         warmup_start = (start_dt - timedelta(days=BACKTEST_WARMUP_CALENDAR_DAYS)).strftime("%Y-%m-%d")
         dfs = []
-        for code in req.funds:
+        for code in funds:
             clean_code = code.split(".")[0]
             try:
                 df = provider.fetch(clean_code, start_date=warmup_start, end_date=req.end_date)
@@ -1044,8 +1116,8 @@ def run_backtest(req: BacktestRequest):
                             w_sum = sum(active_reinvest_weights)
                             weights_norm = [w / w_sum for w in active_reinvest_weights]
                             allocated = 0.0
-                            for i, (code, w) in enumerate(zip(req.funds, weights_norm)):
-                                if i == len(req.funds) - 1:
+                            for i, (code, w) in enumerate(zip(funds, weights_norm)):
+                                if i == len(funds) - 1:
                                     buy_value = portfolio_value - allocated
                                 else:
                                     buy_value = round(portfolio_value * w, 6)
@@ -1069,13 +1141,13 @@ def run_backtest(req: BacktestRequest):
                 
                 if is_first_step:
                     # Initial buy-in: normalize weights to prevent float sum > 1.0
-                    weights = [1.0 / len(req.funds)] * len(req.funds)
+                    weights = [1.0 / len(funds)] * len(funds)
                     w_sum = sum(weights)
                     weights = [w / w_sum for w in weights]
                     portfolio_value = engine.cash_account.available_cash
                     allocated = 0.0
-                    for i, (code, w) in enumerate(zip(req.funds, weights)):
-                        if i == len(req.funds) - 1:
+                    for i, (code, w) in enumerate(zip(funds, weights)):
+                        if i == len(funds) - 1:
                             buy_value = portfolio_value - allocated  # remainder
                         else:
                             buy_value = round(portfolio_value * w, 6)
@@ -1089,7 +1161,7 @@ def run_backtest(req: BacktestRequest):
                         try:
                             if engine.current_date_idx >= 10:
                                 sub_returns = {}
-                                for code in req.funds:
+                                for code in funds:
                                     fund_df = market_data[market_data['fund_code'] == code]
                                     fund_df_sub = fund_df[fund_df.index < current_date]
                                     if not fund_df_sub.empty:
@@ -1100,13 +1172,13 @@ def run_backtest(req: BacktestRequest):
                                     opt = RiskParityOptimizer(df_sub_rets)
                                     weights = opt.optimize().tolist()
                                 else:
-                                    weights = [1.0 / len(req.funds)] * len(req.funds)
+                                    weights = [1.0 / len(funds)] * len(funds)
                             else:
-                                weights = [1.0 / len(req.funds)] * len(req.funds)
+                                weights = [1.0 / len(funds)] * len(funds)
                         except Exception:
-                            weights = [1.0 / len(req.funds)] * len(req.funds)
+                            weights = [1.0 / len(funds)] * len(funds)
                     else:
-                        weights = [1.0 / len(req.funds)] * len(req.funds)
+                        weights = [1.0 / len(funds)] * len(funds)
                     
                     # Sell all current positions
                     any_sold = False
@@ -1125,8 +1197,8 @@ def run_backtest(req: BacktestRequest):
                         w_sum = sum(weights)
                         weights_norm = [w / w_sum for w in weights]
                         allocated = 0.0
-                        for i, (code, w) in enumerate(zip(req.funds, weights_norm)):
-                            if i == len(req.funds) - 1:
+                        for i, (code, w) in enumerate(zip(funds, weights_norm)):
+                            if i == len(funds) - 1:
                                 buy_value = portfolio_value - allocated
                             else:
                                 buy_value = round(portfolio_value * w, 6)

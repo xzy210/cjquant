@@ -327,6 +327,52 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    async function refreshBacktestFundPool(strategyFile, silent = false) {
+        const fundsInput = document.getElementById("backtest-funds");
+        const hint = document.getElementById("backtest-funds-hint");
+        if (!fundsInput || !hint) return false;
+
+        if (!strategyFile || !strategyFile.endsWith(".py")) {
+            hint.textContent = silent ? "" : "内置调仓策略请手动输入基金标的";
+            return false;
+        }
+
+        try {
+            const res = await fetch(`/api/strategies/${encodeURIComponent(strategyFile)}/fund-pool`);
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                hint.textContent = err.detail || "该策略暂无基金池配置";
+                return false;
+            }
+            const pool = await res.json();
+            const codes = pool.funds.map(f => f.code);
+            fundsInput.value = codes.join(",");
+            const detail = pool.funds
+                .map(f => `${f.code}${f.label ? `(${f.label})` : ""} ${(f.static_weight * 100).toFixed(0)}%`)
+                .join(" · ");
+            hint.textContent = pool.name ? `${pool.name}：${detail}` : detail;
+            return true;
+        } catch (err) {
+            console.error("加载基金池失败: ", err);
+            if (!silent) hint.textContent = "加载基金池失败";
+            return false;
+        }
+    }
+
+    const backtestStrategySelect = document.getElementById("backtest-rebalance-freq");
+    if (backtestStrategySelect) {
+        backtestStrategySelect.addEventListener("change", () => {
+            refreshBacktestFundPool(backtestStrategySelect.value, true);
+        });
+    }
+    const btnRefreshBacktestFunds = document.getElementById("btn-refresh-backtest-funds");
+    if (btnRefreshBacktestFunds) {
+        btnRefreshBacktestFunds.addEventListener("click", () => {
+            const strategyFile = document.getElementById("backtest-rebalance-freq").value;
+            refreshBacktestFundPool(strategyFile, false);
+        });
+    }
+
     async function fetchTasks() {
         try {
             const res = await fetch("/api/tasks");

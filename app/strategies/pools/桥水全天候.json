@@ -1,0 +1,26 @@
+{
+  "name": "桥水全天候",
+  "description": "四象限全天候组合：权益 / 黄金 / 长债 / 中短端",
+  "funds": [
+    {
+      "code": "110020.OF",
+      "label": "沪深300",
+      "static_weight": 0.30
+    },
+    {
+      "code": "000216.OF",
+      "label": "华安黄金ETF联接",
+      "static_weight": 0.15
+    },
+    {
+      "code": "012752.OF",
+      "label": "中债7-10年国开债",
+      "static_weight": 0.40
+    },
+    {
+      "code": "007790.OF",
+      "label": "中短端/货基示例",
+      "static_weight": 0.15
+    }
+  ]
+}
