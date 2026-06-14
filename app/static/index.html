@@ -183,8 +183,14 @@
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label for="task-interval">调度间隔 (秒)</label>
-                                    <input type="number" id="task-interval" value="300" min="5" required>
+                                    <label for="task-interval">调度间隔</label>
+                                    <div style="display:flex; gap:8px; align-items:center;">
+                                        <input type="number" id="task-interval" value="1" min="1" required style="flex:1;">
+                                        <select id="task-interval-unit">
+                                            <option value="days" selected>天</option>
+                                            <option value="seconds">秒</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <button type="submit" class="btn btn-primary">创建调度任务</button>
                             </form>
@@ -237,11 +243,14 @@
                                 <div class="card-header">组合回测设置</div>
                                 <form id="form-backtest" class="flex-form">
                                     <div class="form-group">
-                                        <label for="backtest-funds">基金标的 (英文逗号分隔)</label>
-                                        <div style="display:flex; gap:8px; align-items:center;">
-                                            <input type="text" id="backtest-funds" value="" placeholder="选择用户策略后点刷新，或手动输入" required style="flex:1;">
-                                            <button type="button" class="btn btn-secondary" id="btn-refresh-backtest-funds" title="从策略基金池配置加载">刷新基金池</button>
+                                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                                            <label for="backtest-funds" style="margin:0;">基金标的 (英文逗号分隔)</label>
+                                            <div style="display:flex; gap:6px;">
+                                                <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-backtest-funds" title="从策略基金池配置加载">刷新</button>
+                                                <button type="button" class="btn btn-secondary btn-sm" id="btn-save-backtest-funds" title="将当前标的按等权保存为策略基金池">保存</button>
+                                            </div>
                                         </div>
+                                        <input type="text" id="backtest-funds" value="" placeholder="选择用户策略后点刷新，或手动输入" required>
                                         <small id="backtest-funds-hint" style="color:var(--text-muted); margin-top:4px; display:block;"></small>
                                     </div>
                                     <div class="form-group">

@@ -1,0 +1,31 @@
+{
+  "name": "元学习策略",
+  "description": "",
+  "funds": [
+    {
+      "code": "110020.OF",
+      "label": "",
+      "static_weight": 0.2
+    },
+    {
+      "code": "110026.OF",
+      "label": "",
+      "static_weight": 0.2
+    },
+    {
+      "code": "110030.OF",
+      "label": "",
+      "static_weight": 0.2
+    },
+    {
+      "code": "270042.OF",
+      "label": "",
+      "static_weight": 0.2
+    },
+    {
+      "code": "012804.OF",
+      "label": "",
+      "static_weight": 0.2
+    }
+  ]
+}

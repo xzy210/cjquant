@@ -1,7 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
     // Current state variables
     let currentSelectedTaskForLogs = null;
-    let logPollingInterval = null;
+    let logPollingTimer = null;
     let portfolioPollingInterval = null;
     let activeTab = "tab-portfolio";
     let researchFundPool = ["000001.OF", "000002.OF", "000003.OF"];
@@ -44,8 +44,7 @@ document.addEventListener("DOMContentLoaded", () => {
     function onTabChanged(tabId) {
         // Clear background log pollers if we leave scheduler
         if (tabId !== "tab-scheduler") {
-            clearInterval(logPollingInterval);
-            logPollingInterval = null;
+            stopLogPolling();
         }
         
         // Stop portfolio poller if we leave portfolio
@@ -327,6 +326,32 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function normalizeFundCode(code) {
+        const c = code.trim().toUpperCase();
+        if (!c) return "";
+        return c.includes(".") ? c : `${c}.OF`;
+    }
+
+    function parseBacktestFundCodes(raw) {
+        return [...new Set(
+            raw.split(",")
+                .map(normalizeFundCode)
+                .filter(c => c !== "")
+        )];
+    }
+
+    function buildEqualWeightFunds(codes) {
+        const n = codes.length;
+        const weight = Math.round(1000000 / n) / 1000000;
+        return codes.map((code, i) => ({
+            code,
+            label: "",
+            static_weight: i === n - 1
+                ? parseFloat((1 - weight * (n - 1)).toFixed(6))
+                : weight
+        }));
+    }
+
     async function refreshBacktestFundPool(strategyFile, silent = false) {
         const fundsInput = document.getElementById("backtest-funds");
         const hint = document.getElementById("backtest-funds-hint");
@@ -359,6 +384,62 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    async function saveBacktestFundPool() {
+        const strategyFile = document.getElementById("backtest-rebalance-freq").value;
+        const fundsInput = document.getElementById("backtest-funds");
+        const hint = document.getElementById("backtest-funds-hint");
+        const btn = document.getElementById("btn-save-backtest-funds");
+
+        if (!strategyFile || !strategyFile.endsWith(".py")) {
+            alert("请先选择用户策略文件（.py）");
+            return;
+        }
+
+        const codes = parseBacktestFundCodes(fundsInput.value);
+        if (codes.length === 0) {
+            alert("请先输入至少一个基金代码");
+            return;
+        }
+
+        const stem = strategyFile.replace(/\.py$/, "");
+        const payload = {
+            name: stem,
+            description: "",
+            funds: buildEqualWeightFunds(codes)
+        };
+
+        try {
+            const existingRes = await fetch(`/api/strategies/${encodeURIComponent(strategyFile)}/fund-pool`);
+            if (existingRes.ok) {
+                const ok = confirm(`策略「${stem}」已有基金池配置，是否覆盖为当前 ${codes.length} 只基金的等权配置？`);
+                if (!ok) return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = "保存中...";
+
+            const res = await fetch(`/api/strategies/${encodeURIComponent(strategyFile)}/fund-pool`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || "保存基金池失败");
+            }
+
+            const data = await res.json();
+            await refreshBacktestFundPool(strategyFile, true);
+            hint.textContent = `已保存（等权）→ ${data.path || `pools/${stem}.json`}`;
+        } catch (err) {
+            console.error("保存基金池失败: ", err);
+            alert(err.message || "保存基金池失败");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "保存";
+        }
+    }
+
     const backtestStrategySelect = document.getElementById("backtest-rebalance-freq");
     if (backtestStrategySelect) {
         backtestStrategySelect.addEventListener("change", () => {
@@ -372,92 +453,111 @@ document.addEventListener("DOMContentLoaded", () => {
             refreshBacktestFundPool(strategyFile, false);
         });
     }
+    const btnSaveBacktestFunds = document.getElementById("btn-save-backtest-funds");
+    if (btnSaveBacktestFunds) {
+        btnSaveBacktestFunds.addEventListener("click", saveBacktestFundPool);
+    }
+
+    function formatSchedulePeriod(task) {
+        const unit = task.schedule_unit || "seconds";
+        if (unit === "days") {
+            return `${task.schedule_value} 天`;
+        }
+        return `${task.schedule_value} 秒`;
+    }
+
+    function stopLogPolling() {
+        if (logPollingTimer) {
+            clearTimeout(logPollingTimer);
+            logPollingTimer = null;
+        }
+    }
+
+    function renderTasksTable(data) {
+        const tasksList = document.getElementById("tasks-list");
+        tasksList.innerHTML = "";
+
+        if (data.length === 0) {
+            tasksList.innerHTML = `<tr><td colspan="8" class="loading">目前无任何调度任务，请在左侧新建</td></tr>`;
+            return;
+        }
+
+        data.forEach(task => {
+            const tr = document.createElement("tr");
+
+            const checked = task.enabled ? "checked" : "";
+            const switchHtml = `
+                <label class="switch">
+                    <input type="checkbox" class="toggle-task-btn" data-name="${task.name}" ${checked}>
+                    <span class="slider"></span>
+                </label>
+            `;
+
+            let statusBadge = "";
+            if (task.status === "running") {
+                statusBadge = '<span class="badge badge-green"><span class="dot live" style="display:inline-block; margin-right:4px;"></span>执行中</span>';
+            } else if (task.status === "idle") {
+                statusBadge = '<span class="badge badge-blue">空闲</span>';
+            } else {
+                statusBadge = '<span class="badge badge-red">异常</span>';
+            }
+
+            tr.innerHTML = `
+                <td style="font-weight:600; color:var(--text-primary);">${task.name}</td>
+                <td style="font-family: var(--font-mono); font-size:12px;">${task.strategy_file}</td>
+                <td>${formatSchedulePeriod(task)}</td>
+                <td>${switchHtml}</td>
+                <td>${statusBadge}</td>
+                <td style="font-size:11px; color:var(--text-muted);">${task.last_run || "-"}</td>
+                <td style="font-size:11px; color:var(--text-muted);">${task.next_run || "-"}</td>
+                <td>
+                    <div style="display:flex; gap:6px;">
+                        <button class="btn btn-secondary btn-sm btn-logs" data-name="${task.name}">日志</button>
+                        <button class="btn btn-primary btn-sm btn-run" data-name="${task.name}">立即运行</button>
+                        <button class="btn btn-secondary btn-sm btn-del" style="color:var(--color-red); border-color:rgba(239,68,68,0.2);" data-name="${task.name}">删除</button>
+                    </div>
+                </td>
+            `;
+            tasksList.appendChild(tr);
+        });
+
+        document.querySelectorAll(".toggle-task-btn").forEach(sw => {
+            sw.addEventListener("change", async (e) => {
+                const name = e.target.getAttribute("data-name");
+                await toggleTask(name);
+            });
+        });
+
+        document.querySelectorAll(".btn-logs").forEach(btn => {
+            btn.addEventListener("click", () => {
+                selectTaskForLogs(btn.getAttribute("data-name"));
+            });
+        });
+
+        document.querySelectorAll(".btn-run").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const name = btn.getAttribute("data-name");
+                btn.disabled = true;
+                await runTaskImmediately(name);
+                btn.disabled = false;
+            });
+        });
+
+        document.querySelectorAll(".btn-del").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const name = btn.getAttribute("data-name");
+                if (confirm(`确认删除策略任务 '${name}' 吗?`)) {
+                    await deleteTask(name);
+                }
+            });
+        });
+    }
 
     async function fetchTasks() {
         try {
             const res = await fetch("/api/tasks");
             const data = await res.json();
-            const tasksList = document.getElementById("tasks-list");
-            tasksList.innerHTML = "";
-            
-            if (data.length === 0) {
-                tasksList.innerHTML = `<tr><td colspan="8" class="loading">目前无任何调度任务，请在左侧新建</td></tr>`;
-                return;
-            }
-            
-            data.forEach(task => {
-                const tr = document.createElement("tr");
-                
-                // Enabled state toggle switch
-                const checked = task.enabled ? "checked" : "";
-                const switchHtml = `
-                    <label class="switch">
-                        <input type="checkbox" class="toggle-task-btn" data-name="${task.name}" ${checked}>
-                        <span class="slider"></span>
-                    </label>
-                `;
-                
-                // Status mapping
-                let statusBadge = "";
-                if (task.status === "running") {
-                    statusBadge = '<span class="badge badge-green"><span class="dot live" style="display:inline-block; margin-right:4px;"></span>执行中</span>';
-                } else if (task.status === "idle") {
-                    statusBadge = '<span class="badge badge-blue">空闲</span>';
-                } else {
-                    statusBadge = '<span class="badge badge-red">异常</span>';
-                }
-                
-                tr.innerHTML = `
-                    <td style="font-weight:600; color:var(--text-primary);">${task.name}</td>
-                    <td style="font-family: var(--font-mono); font-size:12px;">${task.strategy_file}</td>
-                    <td>${task.schedule_value}秒</td>
-                    <td>${switchHtml}</td>
-                    <td>${statusBadge}</td>
-                    <td style="font-size:11px; color:var(--text-muted);">${task.last_run || "-"}</td>
-                    <td style="font-size:11px; color:var(--text-muted);">${task.next_run || "-"}</td>
-                    <td>
-                        <div style="display:flex; gap:6px;">
-                            <button class="btn btn-secondary btn-sm btn-logs" data-name="${task.name}">日志</button>
-                            <button class="btn btn-primary btn-sm btn-run" data-name="${task.name}">立即运行</button>
-                            <button class="btn btn-secondary btn-sm btn-del" style="color:var(--color-red); border-color:rgba(239,68,68,0.2);" data-name="${task.name}">删除</button>
-                        </div>
-                    </td>
-                `;
-                tasksList.appendChild(tr);
-            });
-            
-            // Attach button action handlers
-            document.querySelectorAll(".toggle-task-btn").forEach(sw => {
-                sw.addEventListener("change", async (e) => {
-                    const name = e.target.getAttribute("data-name");
-                    await toggleTask(name);
-                });
-            });
-            
-            document.querySelectorAll(".btn-logs").forEach(btn => {
-                btn.addEventListener("click", () => {
-                    const name = btn.getAttribute("data-name");
-                    selectTaskForLogs(name);
-                });
-            });
-            
-            document.querySelectorAll(".btn-run").forEach(btn => {
-                btn.addEventListener("click", async () => {
-                    const name = btn.getAttribute("data-name");
-                    btn.disabled = true;
-                    await runTaskImmediately(name);
-                    btn.disabled = false;
-                });
-            });
-            
-            document.querySelectorAll(".btn-del").forEach(btn => {
-                btn.addEventListener("click", async () => {
-                    const name = btn.getAttribute("data-name");
-                    if (confirm(`确认删除策略任务 '${name}' 吗?`)) {
-                        await deleteTask(name);
-                    }
-                });
-            });
+            renderTasksTable(data);
         } catch (err) {
             console.error("加载任务列表失败: ", err);
         }
@@ -495,7 +595,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.getElementById("log-header-title").textContent = "任务运行控制台日志";
                 document.getElementById("log-console-box").textContent = "--- 选中任务已被删除 ---";
                 document.getElementById("btn-refresh-logs").disabled = true;
-                clearInterval(logPollingInterval);
+                stopLogPolling();
             }
         } catch (err) {
             alert(err.message);
@@ -508,6 +608,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const name = document.getElementById("task-name").value.trim();
         const strategy_file = document.getElementById("task-strategy").value;
         const schedule_value = parseInt(document.getElementById("task-interval").value);
+        const schedule_unit = document.getElementById("task-interval-unit").value;
         
         if (!name || !strategy_file || !schedule_value) return;
         
@@ -515,7 +616,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch("/api/tasks", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name, strategy_file, schedule_value })
+                body: JSON.stringify({ name, strategy_file, schedule_value, schedule_unit })
             });
             if (!res.ok) {
                 const errData = await res.json();
@@ -525,7 +626,8 @@ document.addEventListener("DOMContentLoaded", () => {
             // Success reset form
             document.getElementById("task-name").value = "";
             document.getElementById("task-strategy").value = "";
-            document.getElementById("task-interval").value = "300";
+            document.getElementById("task-interval").value = "1";
+            document.getElementById("task-interval-unit").value = "days";
             
             fetchTasks();
         } catch (err) {
@@ -533,22 +635,47 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Logging viewing & polling
+    // Logging viewing & polling（仅任务执行中自动刷新，结束后停止）
     function selectTaskForLogs(name) {
         currentSelectedTaskForLogs = name;
-        document.getElementById("log-header-title").textContent = `任务控制台日志: ${name} (实时刷新中)`;
+        document.getElementById("log-header-title").textContent = `任务控制台日志: ${name}`;
         document.getElementById("btn-refresh-logs").disabled = false;
-        
-        // Fetch logs immediately
+
+        stopLogPolling();
         fetchLogs(name);
-        
-        // Setup live polling (every 2 seconds)
-        clearInterval(logPollingInterval);
-        logPollingInterval = setInterval(() => {
-            fetchLogs(name);
-            // Also refresh task list status to check if finished
-            fetchTasks();
-        }, 2000);
+        scheduleLogPoll(name);
+    }
+
+    async function scheduleLogPoll(name) {
+        if (activeTab !== "tab-scheduler" || currentSelectedTaskForLogs !== name) {
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/tasks");
+            if (!res.ok) return;
+            const tasks = await res.json();
+            renderTasksTable(tasks);
+
+            const task = tasks.find(t => t.name === name);
+            const isRunning = task && task.status === "running";
+
+            if (isRunning) {
+                document.getElementById("log-header-title").textContent =
+                    `任务控制台日志: ${name} (执行中，自动刷新)`;
+                await fetchLogs(name);
+                logPollingTimer = setTimeout(() => scheduleLogPoll(name), 2000);
+            } else {
+                document.getElementById("log-header-title").textContent =
+                    `任务控制台日志: ${name}`;
+                // 任务已启用时低频探测，待下次调度启动后恢复日志刷新
+                if (task && task.enabled) {
+                    logPollingTimer = setTimeout(() => scheduleLogPoll(name), 15000);
+                }
+            }
+        } catch (err) {
+            console.error("轮询任务状态失败: ", err);
+        }
     }
 
     async function fetchLogs(name) {

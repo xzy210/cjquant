@@ -3,6 +3,7 @@ import sys
 import json
 import asyncio
 import subprocess
+import locale
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -73,6 +74,30 @@ def save_portfolio(p: Dict[str, Any]):
 # Active processes tracker: {task_name: Process}
 active_processes: Dict[str, asyncio.subprocess.Process] = {}
 
+
+def _subprocess_env() -> Dict[str, str]:
+    """强制子进程 Python 以 UTF-8 输出，避免 Windows 控制台 GBK 乱码。"""
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
+def _decode_subprocess_line(raw: bytes) -> str:
+    """解码子进程 stdout/stderr，兼容 UTF-8 与 Windows GBK。"""
+    if not raw:
+        return ""
+    preferred = locale.getpreferredencoding(False) or "gbk"
+    for encoding in ("utf-8", preferred, "gbk", "cp936"):
+        if not encoding:
+            continue
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 # ----------------- BACKGROUND SCHEDULER -----------------
 async def run_task_process(task_name: str, script_name: str):
     """Executes the strategy script as a subprocess and streams output to logs"""
@@ -97,10 +122,11 @@ async def run_task_process(task_name: str, script_name: str):
 
             # Launch process using python interpreter (pointing to root to preserve imports)
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, script_path,
+                sys.executable, "-X", "utf8", script_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=os.path.dirname(BASE_DIR)  # Run in cjquant root to allow modular imports
+                cwd=os.path.dirname(BASE_DIR),
+                env=_subprocess_env(),
             )
             active_processes[task_name] = proc
             
@@ -111,7 +137,7 @@ async def run_task_process(task_name: str, script_name: str):
                     line = await stream.readline()
                     if not line:
                         break
-                    decoded_line = line.decode("utf-8", errors="ignore")
+                    decoded_line = _decode_subprocess_line(line)
                     log_f.write(f"{prefix}{decoded_line}")
                     log_f.flush()
 
@@ -132,7 +158,7 @@ async def run_task_process(task_name: str, script_name: str):
                 t["status"] = "idle" if exit_code == 0 else "error"
                 # Schedule next run if enabled
                 if t["enabled"] and t["schedule_type"] == "interval":
-                    next_time = datetime.now() + timedelta(seconds=t["schedule_value"])
+                    next_time = datetime.now() + timedelta(seconds=_task_interval_seconds(t))
                     t["next_run"] = next_time.strftime("%Y-%m-%d %H:%M:%S")
                 break
         save_tasks(tasks)
@@ -184,7 +210,7 @@ async def scheduler_loop():
                     # Trigger async
                     asyncio.create_task(run_task_process(task["name"], task["strategy_file"]))
                     # Update next run time
-                    next_time = now + timedelta(seconds=task["schedule_value"])
+                    next_time = now + timedelta(seconds=_task_interval_seconds(task))
                     task["next_run"] = next_time.strftime("%Y-%m-%d %H:%M:%S")
                     modified = True
             
@@ -202,12 +228,23 @@ async def startup_event():
     asyncio.create_task(scheduler_loop())
 
 # ----------------- CLOSED LOOP PORTFOLIO SYNC -----------------
+def _export_batch_prefix(file_path: str) -> str:
+    """all_weather_o32.csv / all_weather_wechat.csv → all_weather"""
+    basename = os.path.basename(file_path)
+    for suffix in ("_o32.csv", "_wechat.csv"):
+        if basename.endswith(suffix):
+            return basename[: -len(suffix)]
+    return os.path.splitext(basename)[0]
+
+
 def sync_exported_orders_to_portfolio():
     """
     Scans the execution directory for O32 and WeChat exported orders (e.g. *_o32.csv, *_wechat.csv),
     records them in the transaction log as exported trades,
     and moves/renames the files to prevent double processing.
     Does NOT automatically execute simulated fills to modify cash or holdings.
+
+    同一批次会同时导出 O32 与微信两种格式；流水只记 O32 一份，微信文件仅归档。
     """
     import glob
     root_dir = os.path.dirname(BASE_DIR)
@@ -219,8 +256,9 @@ def sync_exported_orders_to_portfolio():
         portfolio["transactions"] = []
         
     updated = False
+    recorded_batches = set()
     
-    # Process O32 files
+    # Process O32 files (primary source for transaction log)
     for file_path in o32_files:
         if ".processed_" in file_path:
             continue
@@ -244,6 +282,7 @@ def sync_exported_orders_to_portfolio():
                     "status": "已导出"
                 })
             updated = True
+            recorded_batches.add(_export_batch_prefix(file_path))
             
             # Rename the file to prevent double-processing
             processed_path = file_path + f".processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -252,11 +291,18 @@ def sync_exported_orders_to_portfolio():
         except Exception as e:
             print(f"[Portfolio Sync Error] Failed to process O32 file {file_path}: {e}")
             
-    # Process WeChat files
+    # Process WeChat files — skip transaction log if O32 batch already recorded
     for file_path in wechat_files:
         if ".processed_" in file_path:
             continue
+        batch_prefix = _export_batch_prefix(file_path)
         try:
+            if batch_prefix in recorded_batches:
+                processed_path = file_path + f".processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                os.rename(file_path, processed_path)
+                print(f"[Portfolio Sync] Archived duplicate WeChat export (batch already logged via O32): {processed_path}")
+                continue
+
             print(f"[Portfolio Sync] Found WeChat exported order file: {file_path}. Recording transactions...")
             df = pd.read_csv(file_path, encoding="utf-8-sig", dtype={"基金代码": str})
             for _, row in df.iterrows():
@@ -288,10 +334,20 @@ def sync_exported_orders_to_portfolio():
         save_portfolio(portfolio)
 
 # ----------------- PYDANTIC SCHEMAS -----------------
+def _task_interval_seconds(task: Dict[str, Any]) -> int:
+    """将任务的 schedule_value + schedule_unit 统一换算为秒。"""
+    value = int(task.get("schedule_value", 0))
+    unit = task.get("schedule_unit", "seconds")
+    if unit == "days":
+        return value * 86400
+    return value
+
+
 class TaskCreate(BaseModel):
     name: str
     strategy_file: str
     schedule_value: int
+    schedule_unit: Literal["seconds", "days"] = "seconds"
 
 class StrategyCreate(BaseModel):
     name: str
@@ -469,6 +525,8 @@ def list_tasks():
 @app.post("/api/tasks")
 def create_task(task: TaskCreate):
     tasks = load_tasks()
+    if task.schedule_value < 1:
+        raise HTTPException(status_code=400, detail="调度间隔必须大于 0")
     # Check if duplicate name
     if any(t["name"] == task.name for t in tasks):
         raise HTTPException(status_code=400, detail="Task name already exists")
@@ -478,6 +536,7 @@ def create_task(task: TaskCreate):
         "strategy_file": task.strategy_file,
         "schedule_type": "interval",
         "schedule_value": task.schedule_value,
+        "schedule_unit": task.schedule_unit,
         "enabled": False,
         "status": "idle",
         "last_run": None,
