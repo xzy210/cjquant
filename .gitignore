@@ -221,5 +221,8 @@ __marimo__/
 *.csv
 *.processed_*
 
+# Local runtime state (strategy execution checkpoints)
+app/strategies/.all_weather_state.json
+
 .workbuddy/
 

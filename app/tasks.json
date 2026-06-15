@@ -18,5 +18,16 @@
     "status": "idle",
     "last_run": "2026-05-22 21:24:11",
     "next_run": null
+  },
+  {
+    "name": "桥水全天侯",
+    "strategy_file": "桥水全天候.py",
+    "schedule_type": "interval",
+    "schedule_value": 1,
+    "schedule_unit": "days",
+    "enabled": true,
+    "status": "idle",
+    "last_run": "2026-06-15 15:13:10",
+    "next_run": "2026-06-16 15:13:15"
   }
 ]
