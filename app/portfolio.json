@@ -5,43 +5,6 @@
   "positions": [],
   "total_value": 1000000.0,
   "pnl": 0.0,
-  "transactions": [
-    {
-      "time": "2026-06-14 19:03:37",
-      "fund_code": "007790.OF",
-      "type": "申购",
-      "amount": 500679.52,
-      "shares": 0.0,
-      "fee": 0.0,
-      "status": "已导出"
-    },
-    {
-      "time": "2026-06-14 19:03:37",
-      "fund_code": "012752.OF",
-      "type": "申购",
-      "amount": 204473.45,
-      "shares": 0.0,
-      "fee": 0.0,
-      "status": "已导出"
-    },
-    {
-      "time": "2026-06-14 19:03:37",
-      "fund_code": "000216.OF",
-      "type": "申购",
-      "amount": 96953.07,
-      "shares": 0.0,
-      "fee": 0.0,
-      "status": "已导出"
-    },
-    {
-      "time": "2026-06-14 19:03:37",
-      "fund_code": "110020.OF",
-      "type": "申购",
-      "amount": 197893.95,
-      "shares": 0.0,
-      "fee": 0.0,
-      "status": "已导出"
-    }
-  ],
+  "transactions": [],
   "pnl_override": null
 }
